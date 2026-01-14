@@ -2,10 +2,10 @@ name: 每日DRAM行情
 
 on:
   schedule:
-    # 每天北京时间 09:30 运行
+    # 每天北京时间 09:00 运行 (UTC时间 01:00)
     - cron: '0 1 * * *'
   
-  # 允许手动点击按钮运行
+  # 允许手动点击按钮测试运行
   workflow_dispatch:
 
 jobs:
@@ -21,13 +21,19 @@ jobs:
       with:
         python-version: '3.9'
 
-    - name: 安装依赖
+    # 👇👇👇 关键步骤：安装中文字体 (防止绘图乱码) 👇👇👇
+    - name: 安装中文字体
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y fonts-noto-cjk
+
+    - name: 安装依赖库
       run: |
         pip install -r requirements.txt
 
     - name: 运行爬虫
       env:
-        # 读取您之前设置的 Secrets
+        # 读取你在 Settings 里设置的钉钉密钥
         DING_WEBHOOK: ${{ secrets.DING_WEBHOOK }}
         DING_SECRET: ${{ secrets.DING_SECRET }}
       run: python main.py
