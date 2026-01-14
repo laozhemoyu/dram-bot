@@ -1,12 +1,10 @@
 import os
 import time
-import datetime
 import hmac
 import hashlib
 import base64
 import urllib.parse
 import requests
-import matplotlib.pyplot as plt
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -20,150 +18,103 @@ from bs4 import BeautifulSoup
 WEBHOOK = os.environ.get("DING_WEBHOOK")
 SECRET = os.environ.get("DING_SECRET")
 
-# 设置中文字体
-plt.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'SimHei', 'Arial Unicode MS', 'sans-serif']
-plt.rcParams['axes.unicode_minus'] = False 
-
-def upload_image_stable(file_path):
+def generate_dos_report(data_list):
     """
-    📤 稳定版上传函数 (双图床轮询)
-    优先使用 Catbox，失败自动切换 vim-cn
+    💻 生成 DOS/Terminal 风格的字符报告
     """
-    print("📤 正在上传图片...")
-    
-    # --- 方案 A: Catbox (非常稳定) ---
-    try:
-        print("   正在尝试图床 A (Catbox)...")
-        with open(file_path, 'rb') as f:
-            data = {'reqtype': 'fileupload', 'userhash': ''}
-            files = {'fileToUpload': f}
-            response = requests.post('https://catbox.moe/user/api.php', data=data, files=files, timeout=30)
-            if response.status_code == 200:
-                url = response.text.strip()
-                print(f"✅ 上传成功: {url}")
-                return url
-    except Exception as e:
-        print(f"⚠️ 图床 A 失败: {e}")
+    if not data_list: return "NO DATA"
 
-    # --- 方案 B: Vim-cn (备用) ---
-    try:
-        print("   正在尝试图床 B (Vim-cn)...")
-        with open(file_path, 'rb') as f:
-            files = {'file': f}
-            response = requests.post('https://img.vim-cn.com/', files=files, timeout=30)
-            if response.status_code == 200:
-                url = response.text.strip().replace('http://', 'https://')
-                print(f"✅ 上传成功: {url}")
-                return url
-    except Exception as e:
-        print(f"⚠️ 图床 B 失败: {e}")
-
-    print("❌ 所有图床均上传失败")
-    return None
-
-def draw_summary_report(data_list):
-    """
-    🎨 绘制【市场分布汇总报告】
-    """
-    if not data_list: return None
-    print("🎨 正在绘制汇总报告...")
-
-    # 1. 数据分类
-    rising = []
-    falling = []
-    flat = []
-
+    # 1. 数据清洗与分类
+    parsed = []
     for item in data_list:
-        name = item[0]
-        short_name = name.replace("DDR", "D") 
-        if len(short_name) > 25: short_name = short_name[:22] + "..."
-        change = item[6]
-        display_str = f"• {short_name}, {change}"
-        
-        if "-" in change and change != "-":
-             falling.append(display_str)
-        elif "0%" in change or change == "-":
-             flat.append(display_str)
-        else:
-             rising.append(display_str)
+        try:
+            # item 格式: [名, 日高, 日低, 盘高, 盘低, 均价, 涨跌]
+            name = item[0].replace("DDR", "D") # 缩写
+            price = item[5]
+            change_str = item[6]
+            
+            # 提取数值用于排序
+            val_clean = change_str.replace("涨跌:", "").replace("%", "").strip()
+            val = float(val_clean) if val_clean not in ["", "-"] else 0
+            
+            parsed.append({
+                "name": name, 
+                "price": price, 
+                "change_str": change_str, 
+                "val": val
+            })
+        except: continue
 
-    # 2. 准备表格内容
-    MAX_SHOW = 12 
-    def format_list(lst):
-        if not lst: return "-"
-        if len(lst) > MAX_SHOW:
-            return "\n".join(lst[:MAX_SHOW]) + f"\n... (Total {len(lst)})"
-        return "\n".join(lst)
+    # 排序
+    up = sorted([x for x in parsed if x['val'] > 0], key=lambda x: x['val'], reverse=True)
+    down = sorted([x for x in parsed if x['val'] < 0], key=lambda x: x['val'])
+    flat = [x for x in parsed if x['val'] == 0]
 
-    rows_data = [
-        ["⬆ Rising (涨)", len(rising), format_list(rising), "Positive"],
-        ["⬇ Falling (跌)", len(falling), format_list(falling), "Negative"],
-        ["➡ Unchanged\n(平)", len(flat), format_list(flat), "Neutral"]
-    ]
+    # 2. 绘制 DOS 界面
+    # 定义宽度
+    W = 38 
+    lines = []
     
-    col_labels = ["Market Trend", "Product Count", "Product List (Examples)", "Status"]
-    row_colors = ['#d62728', '#2ca02c', '#555555']
-
-    # 3. 动态计算高度
-    line_counts = [r[2].count('\n') + 1 for r in rows_data]
-    total_text_lines = sum(line_counts) + 3 
-    fig_height = max(5, total_text_lines * 0.4)
+    # --- Header ---
+    lines.append("=" * W)
+    lines.append(f" DRAM MONITOR SYSTEM       {time.strftime('%H:%M')}")
+    lines.append("=" * W)
     
-    fig, ax = plt.subplots(figsize=(12, fig_height))
-    ax.axis('off')
-
-    # 4. 绘制表格
-    table = ax.table(
-        cellText=rows_data, colLabels=col_labels, cellLoc='left', loc='center',
-        colWidths=[0.15, 0.12, 0.58, 0.15]
-    )
-
-    table.auto_set_font_size(False)
-    table.set_fontsize(11)
-    cells = table.get_celld()
-    header_ratio = 2 / total_text_lines 
+    # --- Dashboard ---
+    total = len(parsed)
+    sentiment = "NEUTRAL"
+    if len(up) > len(down): sentiment = "BULLISH (UP)"
+    elif len(down) > len(up): sentiment = "BEARISH (DOWN)"
     
-    for j in range(4):
-        cell = cells[(0, j)]
-        cell.set_height(header_ratio)
-        cell.set_text_props(weight='bold')
-        cell.set_facecolor('#f0f0f0')
-        cell._loc = 'center'
+    lines.append(f" STATUS: {sentiment}")
+    lines.append(f" TOTAL : {total:<4} | UP:{len(up):<2} DOWN:{len(down):<2} FLAT:{len(flat):<2}")
+    lines.append("-" * W)
 
-    for i, line_count in enumerate(line_counts):
-        row_idx = i + 1
-        row_ratio = line_count / total_text_lines
-        for j in range(4):
-            cell = cells[(row_idx, j)]
-            cell.set_height(row_ratio)
-            if j == 0: cell.set_text_props(color=row_colors[i], weight='bold', ha='center', size=12)
-            if j == 1: cell.set_text_props(ha='center', size=12)
-            if j == 2: cell.get_text().set_x(0.02) 
-            if j == 3: cell.set_text_props(ha='center')
+    # --- Section: RISING ---
+    if up:
+        lines.append(f" [▲ RISING]             Target: {len(up)}")
+        for i, item in enumerate(up):
+            # 格式:  +3.2% | D5 16G (2Gx8)...
+            # 截断过长的名字
+            name_display = item['name']
+            if len(name_display) > 22: name_display = name_display[:20] + ".."
+            
+            lines.append(f" {item['change_str']:>7} | {name_display}")
+            lines.append(f"           | $ {item['price']}")
+        lines.append("-" * W)
 
-    total_count = len(data_list)
-    sentiment = "Mixed"
-    if len(rising) > len(falling): sentiment = "Bullish (Upward)"
-    elif len(falling) > len(rising): sentiment = "Bearish (Downward)"
+    # --- Section: FALLING ---
+    if down:
+        lines.append(f" [▼ FALLING]            Target: {len(down)}")
+        for item in down:
+            name_display = item['name']
+            if len(name_display) > 22: name_display = name_display[:20] + ".."
+            lines.append(f" {item['change_str']:>7} | {name_display}")
+            lines.append(f"           | $ {item['price']}")
+        lines.append("-" * W)
+
+    # --- Section: FLAT ---
+    if flat:
+        lines.append(f" [= FLAT]               Target: {len(flat)}")
+        # 平盘只显示前5个，节省空间
+        for item in flat[:5]:
+            name_display = item['name']
+            if len(name_display) > 22: name_display = name_display[:20] + ".."
+            lines.append(f" {item['change_str']:>7} | {name_display}")
+        if len(flat) > 5:
+            lines.append(f"           ... {len(flat)-5} more")
+
+    lines.append("=" * W)
+    lines.append(" END OF REPORT")
     
-    plt.title(f"DRAM Market Distribution Report ({total_count} Products)", fontsize=16, weight='bold', y=0.98)
-    footer_text = f"Total Products: {total_count}  |  Overall Sentiment: {sentiment}"
-    plt.figtext(0.5, 0.02, footer_text, ha="center", fontsize=12, bbox={"facecolor":"#e6f4ff", "edgecolor":"none", "pad":8, "alpha":0.5})
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d")
-    plt.figtext(0.95, 0.01, f"Last Update: {timestamp}", ha="right", fontsize=9, color="grey")
+    return "\n".join(lines)
 
-    filename = "summary_report.png"
-    plt.savefig(filename, bbox_inches='tight', dpi=150, pad_inches=0.2)
-    plt.close()
-    print("✅ 汇总表格图片已生成")
-    return filename
-
-def send_dingtalk_smart(title, text_backup, img_url=None):
+def send_dingtalk_dos(report_text):
     """
-    🧠 智能发送函数
-    有图发图，图床挂了就发文字，绝不哑火
+    发送钉钉消息 (使用代码块包裹，实现等宽字体显示)
     """
     if not WEBHOOK or not SECRET: return
+
     timestamp = str(round(time.time() * 1000))
     secret_enc = SECRET.encode('utf-8')
     string_to_sign = '{}\n{}'.format(timestamp, SECRET)
@@ -172,21 +123,16 @@ def send_dingtalk_smart(title, text_backup, img_url=None):
     sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
     url = f"{WEBHOOK}&timestamp={timestamp}&sign={sign}"
     
-    # 构建内容
-    content = f"### 📊 {title}\n> 更新时间: {time.strftime('%H:%M')}\n\n"
-    
-    if img_url:
-        content += f"![行情表]({img_url})"
-    else:
-        # 降级模式：发送文字
-        content += "⚠️ (图片上传失败，转为文字版)\n\n" + text_backup
+    # 关键点：把生成的文本放在 ``` ``` 代码块里
+    # 这样在手机和电脑上都会以“等宽字体”显示，保证排版不乱
+    content = f"### 📟 DRAM 实时终端\n\n```text\n{report_text}\n```"
 
     headers = {'Content-Type': 'application/json'}
-    data = {"msgtype": "markdown", "markdown": {"title": title, "text": content}}
+    data = {"msgtype": "markdown", "markdown": {"title": "DRAM DOS Report", "text": content}}
     
     try:
         requests.post(url, headers=headers, json=data, timeout=15)
-        print("✅ 推送成功")
+        print("✅ DOS 报告推送成功")
     except Exception as e:
         print(f"❌ 推送失败: {e}")
 
@@ -235,27 +181,12 @@ def scrape_data():
         driver.quit()
 
 if __name__ == "__main__":
-    print("🚀 启动任务...")
+    print("🚀 启动 DOS 模式任务...")
     data = scrape_data()
     if data:
         print(f"✅ 抓取到 {len(data)} 条数据")
-        
-        # 1. 尝试生成图片
-        img_url = None
-        try:
-            chart_path = draw_summary_report(data)
-            if chart_path:
-                img_url = upload_image_stable(chart_path)
-        except Exception as e:
-            print(f"⚠️ 绘图模块报错: {e}")
-
-        # 2. 准备文字备份 (以防图片失败)
-        # 简单提取前10条数据作为备份
-        backup_text = ""
-        for item in data[:10]:
-            backup_text += f"- {item[0]}: {item[5]} ({item[6]})\n"
-
-        # 3. 发送 (智能判断)
-        send_dingtalk_smart("DRAM 市场分布报告", backup_text, img_url)
+        dos_report = generate_dos_report(data)
+        print(dos_report) # 在日志里打印一遍看看效果
+        send_dingtalk_dos(dos_report)
     else:
         print("❌ 未抓取到数据")
