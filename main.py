@@ -21,6 +21,7 @@ WEBHOOK = os.environ.get("DING_WEBHOOK")
 SECRET = os.environ.get("DING_SECRET")
 
 # 设置中文字体 (适配 GitHub Linux 环境)
+# 如果没有安装 fonts-noto-cjk，中文会显示方框
 plt.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'SimHei', 'Arial Unicode MS', 'sans-serif']
 plt.rcParams['axes.unicode_minus'] = False 
 
