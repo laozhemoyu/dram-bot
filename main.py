@@ -1,5 +1,6 @@
 import os
 import time
+import datetime
 import hmac
 import hashlib
 import base64
@@ -19,16 +20,17 @@ from bs4 import BeautifulSoup
 WEBHOOK = os.environ.get("DING_WEBHOOK")
 SECRET = os.environ.get("DING_SECRET")
 
-# 设置绘图字体，优先使用 Noto Sans CJK (GitHub环境)
+# 设置中文字体 (适配 GitHub Linux 环境)
 plt.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'SimHei', 'Arial Unicode MS', 'sans-serif']
-plt.rcParams['axes.unicode_minus'] = False # 解决负号显示问题
+plt.rcParams['axes.unicode_minus'] = False 
 
 def upload_image_to_host(file_path):
-    """上传图片到图床 (vim-cn)"""
+    """上传图片到图床"""
     try:
-        print("📤 正在上传全量表格...")
+        print("📤 正在上传分析报告...")
         with open(file_path, 'rb') as f:
             files = {'file': f}
+            # 使用 vim-cn 免费图床
             response = requests.post('https://img.vim-cn.com/', files=files, timeout=30)
             if response.status_code == 200:
                 img_url = response.text.strip().replace('http://', 'https://')
@@ -38,101 +40,165 @@ def upload_image_to_host(file_path):
         print(f"❌ 图片上传失败: {e}")
     return None
 
-def draw_full_table(data_list):
+def draw_summary_report(data_list):
     """
-    🎨 绘制包含所有数据的 7 列长表格
+    🎨 绘制【市场分布汇总报告】(仿用户截图样式)
     """
     if not data_list: return None
-    
-    print(f"🎨 正在绘制包含 {len(data_list)} 条数据的表格...")
-    
-    # 1. 准备表头
-    columns = ["项目", "日高点", "日低点", "盘高点", "盘低点", "盘平均", "盘涨跌幅"]
-    rows = []
-    colors = [] # 存储每一行的文本颜色
+    print("🎨 正在绘制汇总报告...")
+
+    # 1. 数据分类
+    rising = []
+    falling = []
+    flat = []
 
     for item in data_list:
-        # item 已经是列表格式 [名, 日高, 日低, 盘高, 盘低, 均价, 涨跌]
-        clean_row = [str(x).strip() for x in item]
-        rows.append(clean_row)
+        # item: [name, ..., change]
+        name = item[0]
+        # 简化名字：去掉冗余的 DDR 前缀，让列表更清爽
+        short_name = name.replace("DDR", "D") 
+        if len(short_name) > 25: short_name = short_name[:22] + "..."
         
-        # 判断颜色（根据最后一列涨跌幅）
-        change_str = clean_row[-1]
-        row_color = 'black' # 默认黑色
+        change = item[6]
         
-        if "-" in change_str and change_str != "-": 
-            row_color = 'green' # 跌显示绿
-        elif "0%" in change_str or change_str == "-":
-            row_color = 'black' # 平显示黑
+        # 格式化显示文本： "• D5 16G..., +3.27%"
+        display_str = f"• {short_name}, {change}"
+        
+        if "-" in change and change != "-":
+             falling.append(display_str)
+        elif "0%" in change or change == "-":
+             flat.append(display_str)
         else:
-            row_color = 'red'   # 涨显示红
-            
-        # 将该行的所有列都设为这个颜色
-        colors.append([row_color] * 7)
+             rising.append(display_str)
 
-    # 2. 动态计算图片高度
-    # 数据越多，图片越长。每行给 0.5 的高度，基础高度 2
-    row_height = 0.5
-    fig_height = max(4, len(rows) * row_height + 1.5)
+    # 2. 准备表格内容 (每行 4 列)
+    # 限制列表长度，防止图片无限拉长
+    MAX_SHOW = 12 
+    def format_list(lst):
+        if not lst: return "-"
+        if len(lst) > MAX_SHOW:
+            return "\n".join(lst[:MAX_SHOW]) + f"\n... (Total {len(lst)})"
+        return "\n".join(lst)
+
+    # 定义三行数据
+    # [Trend, Count, List, Status]
+    rows_data = [
+        ["⬆ Rising (涨)", len(rising), format_list(rising), "Positive"],
+        ["⬇ Falling (跌)", len(falling), format_list(falling), "Negative"],
+        ["➡ Unchanged\n(平)", len(flat), format_list(flat), "Neutral"]
+    ]
+    
+    col_labels = ["Market Trend", "Product Count", "Product List (Examples)", "Status"]
+    row_colors = ['#d62728', '#2ca02c', '#555555'] # 红、绿、灰
+
+    # 3. 动态计算高度 (核心算法)
+    # 计算每一行有多少行文字
+    line_counts = [r[2].count('\n') + 1 for r in rows_data]
+    # 给表头留 2 行的高度
+    total_text_lines = sum(line_counts) + 3 
+    
+    # 图片高度：每行文字约占 0.35 英寸，最小 5 英寸
+    fig_height = max(5, total_text_lines * 0.4)
     
     # 创建画布
-    fig, ax = plt.subplots(figsize=(15, fig_height)) 
-    
-    # 隐藏坐标轴
+    fig, ax = plt.subplots(figsize=(12, fig_height))
     ax.axis('off')
 
-    # 绘制表格
-    table = ax.table(cellText=rows,
-                     colLabels=columns,
-                     cellLoc='center',
-                     loc='center',
-                     colColours=['#e6f4ff']*7) # 表头淡蓝色背景
+    # 4. 绘制表格
+    table = ax.table(
+        cellText=rows_data,
+        colLabels=col_labels,
+        cellLoc='left',
+        loc='center',
+        colWidths=[0.15, 0.12, 0.58, 0.15] # 列宽比例
+    )
 
-    # 3. 美化表格样式
+    # 5. 深度美化表格样式
     table.auto_set_font_size(False)
-    table.set_fontsize(10) # 字体大小
-    table.scale(1, 2)      # 拉伸行高
+    table.set_fontsize(11)
+    
+    cells = table.get_celld()
+    
+    # 计算相对高度比例 (为了让行高随内容自动撑开)
+    # 表头占总高度的比例
+    header_ratio = 2 / total_text_lines 
+    
+    # 设置表头样式
+    for j in range(4):
+        cell = cells[(0, j)]
+        cell.set_height(header_ratio)
+        cell.set_text_props(weight='bold')
+        cell.set_facecolor('#f0f0f0') # 浅灰背景
+        cell.set_edgecolor('black')
+        cell._loc = 'center' # 文字居中
 
-    # 设置单元格颜色和字体粗细
-    for i, row_colors in enumerate(colors):
-        for j, color in enumerate(row_colors):
-            # (i+1, j) 对应单元格 (因为第0行是表头)
-            cell = table[(i+1, j)]
-            cell.get_text().set_color(color)
+    # 设置数据行样式
+    for i, line_count in enumerate(line_counts):
+        row_idx = i + 1
+        # 计算该行应占的高度比例
+        row_ratio = line_count / total_text_lines
+        
+        for j in range(4):
+            cell = cells[(row_idx, j)]
+            cell.set_height(row_ratio)
             
-            # 第一列(产品名) 左对齐
+            # 第1列 (Trend): 设置颜色、居中、加粗
             if j == 0:
-                cell.set_text_props(ha='left')
-                cell.get_text().set_fontweight('bold')
+                cell.set_text_props(color=row_colors[i], weight='bold', ha='center', size=12)
+            
+            # 第2列 (Count): 居中
+            if j == 1:
+                cell.set_text_props(ha='center', size=12)
+                
+            # 第3列 (List): 左对齐，调整内边距
+            if j == 2:
+                # 给文字加一点左边距，防止贴着线
+                text_obj = cell.get_text()
+                text_obj.set_x(0.02) 
+            
+            # 第4列 (Status): 居中
+            if j == 3:
+                cell.set_text_props(ha='center')
 
-    # 4. 保存图片
-    filename = "full_table.png"
+    # 6. 添加页眉页脚
+    total_count = len(data_list)
+    sentiment = "Mixed"
+    if len(rising) > len(falling): sentiment = "Bullish (Upward)"
+    elif len(falling) > len(rising): sentiment = "Bearish (Downward)"
+    
+    # 标题
+    plt.title(f"DRAM Market Distribution Report ({total_count} Products)", fontsize=16, weight='bold', y=0.98)
+    
+    # 底部统计栏
+    footer_text = f"Total Products: {total_count}  |  Overall Sentiment: {sentiment}"
+    plt.figtext(0.5, 0.02, footer_text, ha="center", fontsize=12, 
+                bbox={"facecolor":"#e6f4ff", "edgecolor":"none", "pad":8, "alpha":0.5})
+    
+    # 右下角时间
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d")
+    plt.figtext(0.95, 0.01, f"Last Update: {timestamp}", ha="right", fontsize=9, color="grey")
+
+    # 保存
+    filename = "summary_report.png"
     plt.savefig(filename, bbox_inches='tight', dpi=150, pad_inches=0.2)
     plt.close()
-    print("✅ 全量表格图片已生成")
+    print("✅ 汇总表格图片已生成")
     return filename
 
 def send_dingtalk_markdown(title, img_url):
-    """发送只包含图片的 Markdown 消息"""
-    if not WEBHOOK or not SECRET: 
-        print("❌ 未配置钉钉 Secrets")
-        return
-
+    """发送图片消息"""
+    if not WEBHOOK or not SECRET: return
     timestamp = str(round(time.time() * 1000))
     secret_enc = SECRET.encode('utf-8')
     string_to_sign = '{}\n{}'.format(timestamp, SECRET)
     string_to_sign_enc = string_to_sign.encode('utf-8')
     hmac_code = hmac.new(secret_enc, string_to_sign_enc, digestmod=hashlib.sha256).digest()
     sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
-    
     url = f"{WEBHOOK}&timestamp={timestamp}&sign={sign}"
     
-    # Markdown 内容：点击图片可放大
-    content = f"### 📊 {title}\n> 数据量: 全量监测\n> 更新时间: {time.strftime('%H:%M')}\n\n![行情表]({img_url})"
-
+    content = f"### 📊 {title}\n> 市场情绪: 自动分析\n> 更新时间: {time.strftime('%H:%M')}\n\n![行情表]({img_url})"
     headers = {'Content-Type': 'application/json'}
     data = {"msgtype": "markdown", "markdown": {"title": title, "text": content}}
-    
     try:
         requests.post(url, headers=headers, json=data, timeout=15)
         print("✅ 推送成功")
@@ -140,22 +206,18 @@ def send_dingtalk_markdown(title, img_url):
         print(f"❌ 推送失败: {e}")
 
 def scrape_data():
-    """Chrome 爬虫：抓取所有行、所有列"""
+    """Chrome 爬虫"""
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    
     driver = webdriver.Chrome(options=options)
-    
     try:
         print("🌐 访问 TrendForce...")
         driver.get("https://www.trendforce.cn/price")
         time.sleep(5)
-        
-        # 尝试点击 DRAM 按钮
         try:
             btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'DRAM')]")))
             driver.execute_script("arguments[0].click();", btn)
@@ -164,34 +226,22 @@ def scrape_data():
         
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         raw_rows = []
-        
-        # 遍历所有行
-        # 寻找 table 下所有的 tr
         rows = soup.select('table tbody tr') or soup.select('table tr')
-        print(f"🔍 找到 {len(rows)} 行原始数据")
-
         for row in rows:
             cols = row.find_all(['th', 'td'])
-            
-            # 必须满足至少 7 列才抓取
             if len(cols) < 7: continue
-            
-            # 获取第1列产品名
             p_name = cols[0].get_text(strip=True)
-            
-            # 只要包含 DDR 就抓取（DDR3/4/5），不再限制数量
             if 'DDR' in p_name.upper():
                 row_data = [
-                    p_name,                          # 0: 项目
-                    cols[1].get_text(strip=True),    # 1: 日高
-                    cols[2].get_text(strip=True),    # 2: 日低
-                    cols[3].get_text(strip=True),    # 3: 盘高
-                    cols[4].get_text(strip=True),    # 4: 盘低
-                    cols[5].get_text(strip=True),    # 5: 盘均
-                    cols[6].get_text(strip=True)     # 6: 涨跌
+                    p_name,
+                    cols[1].get_text(strip=True),
+                    cols[2].get_text(strip=True),
+                    cols[3].get_text(strip=True),
+                    cols[4].get_text(strip=True),
+                    cols[5].get_text(strip=True),
+                    cols[6].get_text(strip=True)
                 ]
                 raw_rows.append(row_data)
-        
         return raw_rows
     except Exception as e:
         print(f"Error: {e}")
@@ -200,25 +250,14 @@ def scrape_data():
         driver.quit()
 
 if __name__ == "__main__":
-    print("🚀 启动全量抓取任务...")
-    
-    # 1. 抓取
-    all_data = scrape_data()
-    
-    if all_data:
-        print(f"✅ 成功提取 {len(all_data)} 条有效数据")
-        
-        # 2. 绘图 (生成全量长图)
-        img_path = draw_full_table(all_data)
-        
-        # 3. 上传图床
+    print("🚀 启动汇总报告任务...")
+    data = scrape_data()
+    if data:
+        print(f"✅ 抓取到 {len(data)} 条数据")
+        img_path = draw_summary_report(data)
         if img_path:
             url = upload_image_to_host(img_path)
-            
-            # 4. 推送
             if url:
-                send_dingtalk_markdown("DRAM 全量行情表", url)
-            else:
-                print("❌ 图片上传失败，无法推送")
+                send_dingtalk_markdown("DRAM 市场分布报告", url)
     else:
         print("❌ 未抓取到数据")
