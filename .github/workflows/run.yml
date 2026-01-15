@@ -14,8 +14,8 @@ jobs:
         with:
           python-version: '3.9'
 
-      # 🔥 关键：安装 Edge 和配套驱动，不再动态下载
-      - name: Setup Edge and Driver
+      # 🔥 核心修复：手动安装驱动，确保路径固定在 /usr/bin/msedgedriver
+      - name: Install Edge and Driver
         run: |
           sudo apt-get update
           sudo apt-get install -y microsoft-edge-stable msedgedriver
@@ -26,7 +26,7 @@ jobs:
       - name: Install Dependencies
         run: pip install selenium requests matplotlib beautifulsoup4 openai
 
-      - name: Run Python Script
+      - name: Run Script
         env:
           DING_WEBHOOK: ${{ secrets.DING_WEBHOOK }}
           DING_SECRET: ${{ secrets.DING_SECRET }}
