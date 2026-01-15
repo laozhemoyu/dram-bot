@@ -12,7 +12,7 @@ from openai import OpenAI
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# 环境配置
+# 获取环境变量
 WEBHOOK = os.environ.get("DING_WEBHOOK")
 SECRET = os.environ.get("DING_SECRET")
 AI_API_KEY = os.environ.get("AI_API_KEY")
@@ -29,28 +29,28 @@ def scrape_trendforce():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0")
     
-    # 🔥 核心修复：直接调用系统预装的 msedgedriver，删掉 DriverManager().install()
-    # GitHub Actions ubuntu 环境通过 apt 安装后，路径就在 /usr/bin/msedgedriver
+    # 🔥 核心修改：绝对不要使用 EdgeChromiumDriverManager().install()
+    # 直接使用我们在 run.yml 中预装好的驱动路径
     try:
         service = EdgeService(executable_path='/usr/bin/msedgedriver')
         driver = webdriver.Edge(service=service, options=options)
     except Exception as e:
-        logger.warning(f"指定路径启动失败，尝试默认模式: {e}")
+        logger.warning(f"指定路径失败，尝试系统寻找: {e}")
         driver = webdriver.Edge(options=options)
     
     results = {}
     try:
-        logger.info("📡 正在实时访问 TrendForce 官网...")
+        logger.info("📡 正在实时联网抓取 TrendForce 最新数据...")
         driver.get("https://www.trendforce.cn/price")
         
         # 等待表格加载
         WebDriverWait(driver, 45).until(EC.presence_of_element_located((By.TAG_NAME, "table")))
         
-        # 强制向下滚动，确保底部的 SSD 模块被触发加载
+        # 强制滚动以触发加载 SSD 板块
         for scroll in [1000, 2000]:
             driver.execute_script(f"window.scrollTo(0, {scroll});")
             time.sleep(5)
-        
+            
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         targets = {"DRAM": "DRAM 现货价格", "NAND Flash": "NAND Flash 现货价格", "SSD": "成品现货价格"}
         
@@ -64,29 +64,26 @@ def scrape_trendforce():
                     for tr in table.find_all('tr')[1:]:
                         cells = tr.find_all('td')
                         if len(cells) >= 2:
-                            # 修复之前出现的“型号显示为数字”的问题
+                            # 修复之前项目名变成数字的问题，优先取 title 属性
                             line = []
                             for i, td in enumerate(cells):
-                                # 优先抓取 title 属性，这通常包含完整的型号名称
                                 txt = td.get('title') or td.get_text(" ", strip=True)
                                 line.append(txt)
-                            if len(line[0]) > 3: # 过滤无效行
-                                rows.append(line[:len(headers)])
+                            if len(line[0]) > 2: rows.append(line[:len(headers)])
                     
                     if rows:
                         results[key] = {"headers": headers, "rows": rows}
-                        logger.info(f"✅ 成功抓取: {key}")
+                        logger.info(f"✅ 成功抓取板块: {key}")
     finally:
         driver.quit()
     return results
 
 def draw_table(title, headers, rows):
     if not rows: return None
-    # 加宽画布防止文字重叠
-    fig, ax = plt.subplots(figsize=(16, len(rows)*0.55 + 2))
+    fig, ax = plt.subplots(figsize=(16, len(rows)*0.6 + 2))
     ax.axis('off')
     table = ax.table(cellText=rows, colLabels=headers, loc='center', cellLoc='left')
-    table.auto_set_font_size(False); table.set_fontsize(11); table.scale(1.2, 2.4)
+    table.auto_set_font_size(False); table.set_fontsize(11); table.scale(1.2, 2.5)
     for (i, j), cell in table.get_celld().items():
         if i == 0: cell.set_facecolor('#D6EAF8'); cell.set_text_props(weight='bold', ha='center')
     path = f"{title}.png"
@@ -94,10 +91,10 @@ def draw_table(title, headers, rows):
     return path
 
 def get_ai_analysis(data):
-    if not AI_API_KEY: return "AI Key 未配置"
+    if not AI_API_KEY: return "AI 未配置"
     try:
         client = OpenAI(api_key=AI_API_KEY, base_url=AI_BASE_URL)
-        resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": f"总结行情：{str(data)[:1000]}"}])
+        resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": f"分析行情：{str(data)[:1000]}"}])
         return resp.choices[0].message.content
     except: return "AI 分析暂时不可用"
 
@@ -105,20 +102,20 @@ def send_dingtalk(links, ai_text):
     if not WEBHOOK or not links: return
     ts = str(round(time.time() * 1000))
     sign = urllib.parse.quote_plus(base64.b64encode(hmac.new(SECRET.encode('utf-8'), f"{ts}\n{SECRET}".encode('utf-8'), hashlib.sha256).digest()))
-    md = f"### 📊 实时存储行情报告\n{ai_text}\n\n---\n"
+    md = f"### 📊 实时存储行情报告\n{ai_text}\n\n"
     for cat in ["DRAM", "NAND Flash", "SSD"]:
         if cat in links: md += f"#### {cat}\n![{cat}]({links[cat]})\n\n"
-    requests.post(f"{WEBHOOK}&timestamp={ts}&sign={sign}", json={"msgtype": "markdown", "markdown": {"title": "价格监控", "text": md}})
+    requests.post(f"{WEBHOOK}&timestamp={ts}&sign={sign}", json={"msgtype": "markdown", "markdown": {"title": "价格快报", "text": md}})
 
 if __name__ == "__main__":
     configure_fonts()
     res = scrape_trendforce()
     if res:
-        ai = get_ai_analysis(res)
-        img_links = {}
+        ai_msg = get_ai_analysis(res)
+        lnks = {}
         for cat, content in res.items():
             p = draw_table(cat, content['headers'], content['rows'])
             if p:
                 r = requests.post('https://catbox.moe/user/api.php', data={'reqtype': 'fileupload'}, files={'fileToUpload': open(p, 'rb')})
-                if r.status_code == 200: img_links[cat] = r.text.strip()
-        send_dingtalk(img_links, ai)
+                if r.status_code == 200: lnks[cat] = r.text.strip()
+        send_dingtalk(lnks, ai_msg)
