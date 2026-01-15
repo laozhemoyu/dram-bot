@@ -1,9 +1,9 @@
 name: Price Monitor Pro
 
 on:
-  workflow_dispatch: # 支持手动点击运行
+  workflow_dispatch:
   schedule:
-    - cron: '45 0 * * *' # 北京时间 08:45 运行
+    - cron: '45 0 * * *' # 北京时间 08:45 (UTC 00:45)
 
 jobs:
   build:
@@ -17,18 +17,17 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Install Fonts
+      - name: Install Chinese Fonts
         run: |
           sudo apt-get update
           sudo apt-get install -y fonts-wqy-microhei
 
-      - name: Install Deps
+      - name: Install Dependencies
         run: |
           pip install selenium webdriver-manager requests matplotlib beautifulsoup4 openai
 
-      - name: Run
+      - name: Run Monitor
         env:
-          # 检查你的 GitHub Secrets 名字是否跟下面这四个一模一样
           DING_WEBHOOK: ${{ secrets.DING_WEBHOOK }}
           DING_SECRET: ${{ secrets.DING_SECRET }}
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
