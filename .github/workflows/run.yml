@@ -14,7 +14,8 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Install Edge and Driver
+      # 🔥 关键：安装 Edge 和配套驱动，不再动态下载
+      - name: Setup Edge and Driver
         run: |
           sudo apt-get update
           sudo apt-get install -y microsoft-edge-stable msedgedriver
@@ -22,10 +23,10 @@ jobs:
       - name: Install Fonts
         run: sudo apt-get install -y fonts-wqy-microhei
 
-      - name: Install Deps
+      - name: Install Dependencies
         run: pip install selenium requests matplotlib beautifulsoup4 openai
 
-      - name: Run
+      - name: Run Python Script
         env:
           DING_WEBHOOK: ${{ secrets.DING_WEBHOOK }}
           DING_SECRET: ${{ secrets.DING_SECRET }}
