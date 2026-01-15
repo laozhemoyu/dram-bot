@@ -12,7 +12,7 @@ from openai import OpenAI
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# 获取环境变量
+# 环境配置
 WEBHOOK = os.environ.get("DING_WEBHOOK")
 SECRET = os.environ.get("DING_SECRET")
 AI_API_KEY = os.environ.get("AI_API_KEY")
@@ -29,18 +29,17 @@ def scrape_trendforce():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0")
     
-    # 🔥 核心修改：绝对不要使用 EdgeChromiumDriverManager().install()
-    # 直接使用我们在 run.yml 中预装好的驱动路径
+    # 🔥 核心修复：直接使用系统路径，删掉 EdgeChromiumDriverManager().install()
     try:
         service = EdgeService(executable_path='/usr/bin/msedgedriver')
         driver = webdriver.Edge(service=service, options=options)
     except Exception as e:
-        logger.warning(f"指定路径失败，尝试系统寻找: {e}")
+        logger.warning(f"指定路径失败，尝试系统默认寻找: {e}")
         driver = webdriver.Edge(options=options)
     
     results = {}
     try:
-        logger.info("📡 正在实时联网抓取 TrendForce 最新数据...")
+        logger.info("📡 正在实时联网访问 TrendForce 官网...")
         driver.get("https://www.trendforce.cn/price")
         
         # 等待表格加载
@@ -64,12 +63,14 @@ def scrape_trendforce():
                     for tr in table.find_all('tr')[1:]:
                         cells = tr.find_all('td')
                         if len(cells) >= 2:
-                            # 修复之前项目名变成数字的问题，优先取 title 属性
+                            # 修复之前项目名变成数字的问题
                             line = []
                             for i, td in enumerate(cells):
+                                # 优先从 title 属性获取完整型号名称
                                 txt = td.get('title') or td.get_text(" ", strip=True)
                                 line.append(txt)
-                            if len(line[0]) > 2: rows.append(line[:len(headers)])
+                            if len(line[0]) > 2:
+                                rows.append(line[:len(headers)])
                     
                     if rows:
                         results[key] = {"headers": headers, "rows": rows}
@@ -85,16 +86,18 @@ def draw_table(title, headers, rows):
     table = ax.table(cellText=rows, colLabels=headers, loc='center', cellLoc='left')
     table.auto_set_font_size(False); table.set_fontsize(11); table.scale(1.2, 2.5)
     for (i, j), cell in table.get_celld().items():
-        if i == 0: cell.set_facecolor('#D6EAF8'); cell.set_text_props(weight='bold', ha='center')
+        if i == 0:
+            cell.set_facecolor('#D6EAF8')
+            cell.set_text_props(weight='bold', ha='center')
     path = f"{title}.png"
     plt.savefig(path, bbox_inches='tight', dpi=120); plt.close()
     return path
 
 def get_ai_analysis(data):
-    if not AI_API_KEY: return "AI 未配置"
+    if not AI_API_KEY: return "AI 配置缺失"
     try:
         client = OpenAI(api_key=AI_API_KEY, base_url=AI_BASE_URL)
-        resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": f"分析行情：{str(data)[:1000]}"}])
+        resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": f"总结行情：{str(data)[:1000]}"}])
         return resp.choices[0].message.content
     except: return "AI 分析暂时不可用"
 
@@ -102,7 +105,7 @@ def send_dingtalk(links, ai_text):
     if not WEBHOOK or not links: return
     ts = str(round(time.time() * 1000))
     sign = urllib.parse.quote_plus(base64.b64encode(hmac.new(SECRET.encode('utf-8'), f"{ts}\n{SECRET}".encode('utf-8'), hashlib.sha256).digest()))
-    md = f"### 📊 实时存储行情报告\n{ai_text}\n\n"
+    md = f"### 📊 实时存储价格报告\n{ai_text}\n\n"
     for cat in ["DRAM", "NAND Flash", "SSD"]:
         if cat in links: md += f"#### {cat}\n![{cat}]({links[cat]})\n\n"
     requests.post(f"{WEBHOOK}&timestamp={ts}&sign={sign}", json={"msgtype": "markdown", "markdown": {"title": "价格快报", "text": md}})
@@ -112,10 +115,10 @@ if __name__ == "__main__":
     res = scrape_trendforce()
     if res:
         ai_msg = get_ai_analysis(res)
-        lnks = {}
+        img_links = {}
         for cat, content in res.items():
             p = draw_table(cat, content['headers'], content['rows'])
             if p:
                 r = requests.post('https://catbox.moe/user/api.php', data={'reqtype': 'fileupload'}, files={'fileToUpload': open(p, 'rb')})
-                if r.status_code == 200: lnks[cat] = r.text.strip()
-        send_dingtalk(lnks, ai_msg)
+                if r.status_code == 200: img_links[cat] = r.text.strip()
+        send_dingtalk(img_links, ai_msg)
