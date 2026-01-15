@@ -1,41 +1,32 @@
-name: Price Monitor Edge Edition
+name: Price Monitor Pro
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '45 0 * * *' # 北京时间 08:45 (UTC 00:45)
+    - cron: '45 0 * * *'
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.9'
 
-      - name: Install Microsoft Edge
-        run: |
-          curl https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > microsoft.gpg
-          sudo install -o root -g root -m 644 microsoft.gpg /etc/apt/trusted.gpg.d/
-          sudo sh -c 'echo "deb [arch=amd64] https://packages.microsoft.com/repos/edge stable main" > /etc/apt/sources.list.d/microsoft-edge.list'
-          sudo rm microsoft.gpg
-          sudo apt-get update
-          sudo apt-get install -y microsoft-edge-stable
-
-      - name: Install Chinese Fonts
+      # 🔥 关键修复：安装 Edge 和驱动，确保本地可用
+      - name: Install Edge Browser
         run: |
           sudo apt-get update
-          sudo apt-get install -y fonts-wqy-microhei
+          sudo apt-get install -y microsoft-edge-stable msedgedriver
 
-      - name: Install Dependencies
-        run: |
-          pip install selenium webdriver-manager requests matplotlib beautifulsoup4 openai
+      - name: Install Fonts
+        run: sudo apt-get install -y fonts-wqy-microhei
 
-      - name: Run Monitor
+      - name: Install Deps
+        run: pip install selenium requests matplotlib beautifulsoup4 openai
+
+      - name: Run
         env:
           DING_WEBHOOK: ${{ secrets.DING_WEBHOOK }}
           DING_SECRET: ${{ secrets.DING_SECRET }}
