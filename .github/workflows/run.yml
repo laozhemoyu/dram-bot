@@ -1,4 +1,4 @@
-name: Price Monitor Edge Edition
+name: Price Monitor Chrome Edition
 
 on:
   workflow_dispatch:
@@ -14,15 +14,11 @@ jobs:
         with:
           python-version: '3.9'
 
-      # 🔥 关键：在盒子里安装 Edge 浏览器和对应的驱动
-      - name: Setup Edge and Driver
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y microsoft-edge-stable msedgedriver
-
+      # 安装中文字体，确保生成的图片不乱码
       - name: Install Fonts
         run: sudo apt-get install -y fonts-wqy-microhei
 
+      # 安装必要的 Python 包
       - name: Install Dependencies
         run: pip install selenium requests matplotlib beautifulsoup4 openai
 
