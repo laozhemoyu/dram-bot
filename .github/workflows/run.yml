@@ -14,15 +14,15 @@ jobs:
         with:
           python-version: '3.9'
 
-      # 安装中文字体，确保生成的图片不乱码
+      # 只安装中文字体，确保生成的图片不乱码
       - name: Install Fonts
         run: sudo apt-get install -y fonts-wqy-microhei
 
-      # 安装必要的 Python 包
+      # 安装 Python 运行依赖
       - name: Install Dependencies
         run: pip install selenium requests matplotlib beautifulsoup4 openai
 
-      - name: Run Python Script
+      - name: Run Script
         env:
           DING_WEBHOOK: ${{ secrets.DING_WEBHOOK }}
           DING_SECRET: ${{ secrets.DING_SECRET }}
