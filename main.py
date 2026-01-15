@@ -5,270 +5,232 @@ import hashlib
 import base64
 import urllib.parse
 import requests
+import logging
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 
-# ==========================================
-# 🔑 环境变量
-# ==========================================
+# ================= 配置 =================
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 WEBHOOK = os.environ.get("DING_WEBHOOK")
 SECRET = os.environ.get("DING_SECRET")
 
-# 设置中文字体 (适配 GitHub Linux 环境)
-plt.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'SimHei', 'Arial Unicode MS', 'sans-serif']
-plt.rcParams['axes.unicode_minus'] = False 
+def configure_fonts():
+    """
+    专门针对 GitHub Linux 环境的字体配置
+    """
+    # 1. 优先尝试加载 Linux 系统自带的中文字体 (需要 workflow 安装)
+    font_names = ['WenQuanYi Micro Hei', 'Noto Sans CJK JP', 'SimHei']
+    
+    # 查找系统可用字体
+    system_fonts = set(f.name for f in fm.fontManager.ttflist)
+    logger.info(f"系统可用字体示例: {list(system_fonts)[:5]}")
+    
+    detected_font = None
+    for font in font_names:
+        if font in system_fonts:
+            detected_font = font
+            break
+            
+    if detected_font:
+        logger.info(f"✅ 使用系统字体: {detected_font}")
+        plt.rcParams['font.sans-serif'] = [detected_font]
+        plt.rcParams['axes.unicode_minus'] = False
+    else:
+        # 2. 如果都没有，尝试下载字体 (保底策略)
+        font_path = 'SimHei.ttf'
+        if not os.path.exists(font_path):
+            logger.info("⚠️ 未找到系统字体，正在下载 SimHei.ttf ...")
+            try:
+                # 从 GitHub 镜像或其他源下载字体
+                url = "https://github.com/StellarCN/scp_zh/raw/master/fonts/SimHei.ttf"
+                r = requests.get(url)
+                with open(font_path, "wb") as f:
+                    f.write(r.content)
+            except Exception as e:
+                logger.error(f"字体下载失败: {e}")
+                
+        if os.path.exists(font_path):
+            # 显式加载字体文件
+            prop = fm.FontProperties(fname=font_path)
+            plt.rcParams['font.family'] = prop.get_name()
+            logger.info(f"✅ 已加载本地字体文件: {font_path}")
+        else:
+            logger.error("❌ 严重警告: 无可用中文字体，图表文字将显示为方框")
 
-def upload_image_stable(file_path):
-    """上传图片 (优先 Catbox)"""
-    print(f"📤 正在上传: {file_path} ...")
+def get_driver():
+    """获取适配 GitHub Actions 的 Driver"""
+    options = Options()
+    options.add_argument("--headless=new") 
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
+    
+    # 伪装反爬
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    
+    # 使用 webdriver_manager 自动安装驱动
+    service = ChromeService(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+    
+    # 移除 selenium 特征
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+        "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+    })
+    return driver
+
+def upload_image(file_path):
+    """上传到 Catbox"""
     try:
+        if not os.path.exists(file_path): return None
         with open(file_path, 'rb') as f:
-            data = {'reqtype': 'fileupload', 'userhash': ''}
-            files = {'fileToUpload': f}
-            response = requests.post('https://catbox.moe/user/api.php', data=data, files=files, timeout=30)
-            if response.status_code == 200:
-                url = response.text.strip()
-                print(f"✅ 上传成功: {url}")
-                return url
-    except: pass
+            resp = requests.post(
+                'https://catbox.moe/user/api.php', 
+                data={'reqtype': 'fileupload'}, 
+                files={'fileToUpload': f},
+                timeout=30
+            )
+            if resp.status_code == 200:
+                return resp.text.strip()
+    except Exception as e:
+        logger.error(f"上传失败: {e}")
     return None
 
-def draw_generic_table(title, headers, rows):
-    """
-    🎨 通用绘图函数：根据传入的表头和数据自动调整
-    """
-    if not rows or not headers: return None
-    print(f"🎨 正在绘制 [{title}] ({len(rows)} 行)...")
+def draw_table(title, headers, rows):
+    """绘图函数"""
+    if not rows: return None
+    # 截取前 25 行防止图片过长
+    rows = rows[:25]
     
-    # 动态计算图表尺寸
-    col_count = len(headers)
-    row_count = len(rows)
-    
-    # 宽度：列越多越宽
-    fig_width = max(12, col_count * 2.2)
-    # 高度：行越多越高
-    fig_height = max(4, row_count * 0.6 + 2)
-    
-    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    # 设置图形大小
+    h_scale = len(rows) * 0.6 + 2
+    w_scale = len(headers) * 2.5
+    fig, ax = plt.subplots(figsize=(w_scale, h_scale))
     ax.axis('off')
-
-    # 绘制表格
-    # 动态分配列宽：第一列(产品名)给宽一点，其余平分
-    col_widths = []
-    if col_count > 0:
-        first_col_w = 0.25
-        other_col_w = (1.0 - first_col_w) / (col_count - 1)
-        col_widths = [first_col_w] + [other_col_w] * (col_count - 1)
-
-    table = ax.table(
-        cellText=rows, 
-        colLabels=headers, 
-        cellLoc='center', 
-        loc='center',
-        colWidths=col_widths if len(col_widths) == col_count else None
-    )
-
-    # 美化表格
+    
+    # 绘制
+    table = ax.table(cellText=rows, colLabels=headers, loc='center', cellLoc='center')
+    
+    # 样式调整
     table.auto_set_font_size(False)
     table.set_fontsize(11)
-    table.scale(1, 2)
+    table.scale(1, 1.8)
     
-    cells = table.get_celld()
+    # 如果使用了本地字体文件，需要手动应用字体属性
+    font_path = 'SimHei.ttf'
+    font_prop = fm.FontProperties(fname=font_path) if os.path.exists(font_path) else None
     
-    # 定义颜色
-    color_header = '#e6f4ff' # 浅蓝表头
-    color_even   = '#ffffff' # 白
-    color_odd    = '#f9f9f9' # 浅灰 (斑马纹)
+    if font_prop:
+        for cell in table.get_celld().values():
+            cell.set_text_props(fontproperties=font_prop)
 
-    for i in range(row_count + 1):
-        for j in range(col_count):
-            cell = cells[(i, j)]
-            
-            # 表头样式
-            if i == 0:
-                cell.set_facecolor(color_header)
-                cell.set_text_props(weight='bold', size=12)
-            else:
-                # 数据行斑马纹背景
-                cell.set_facecolor(color_even if i % 2 == 0 else color_odd)
-                
-                # 第一列左对齐 + 加粗
-                if j == 0:
-                    cell.set_text_props(ha='left', weight='bold')
-                
-                # 尝试根据最后一列(通常是涨跌)变色
-                # 如果是最后一列
-                if j == col_count - 1:
-                    val_text = rows[i-1][j]
-                    if "▲" in val_text or "+" in val_text:
-                        cell.set_text_props(color='#d62728', weight='bold') # 红
-                    elif "▼" in val_text or "-" in val_text:
-                        if "0%" not in val_text:
-                            cell.set_text_props(color='green', weight='bold') # 绿
+    # 简单配色
+    for (i, j), cell in table.get_celld().items():
+        if i == 0:
+            cell.set_facecolor('#409EFF')
+            cell.set_text_props(color='white', weight='bold')
+            if font_prop: cell.set_text_props(fontproperties=font_prop, weight='bold', color='white')
+        else:
+            val = rows[i-1][j]
+            if j == len(headers) - 1: # 最后一列涨跌
+                if '▲' in val or '+' in val: cell.set_text_props(color='red')
+                if '▼' in val or '-' in val: cell.set_text_props(color='green')
 
-    plt.title(f"{title} Monitor ({time.strftime('%Y-%m-%d')})", fontsize=16, weight='bold', y=0.98)
-    
-    filename = f"table_{title}.png"
-    plt.savefig(filename, bbox_inches='tight', dpi=150, pad_inches=0.2)
+    plt.title(f"{title} ({time.strftime('%m-%d')})", y=0.98)
+    filename = f"{title}.png"
+    plt.savefig(filename, bbox_inches='tight', dpi=120)
     plt.close()
     return filename
 
-def send_dingtalk_multi_images(title, image_urls):
-    """发送包含多张图片的 Markdown"""
+def main():
+    configure_fonts() # 初始化字体
+    driver = get_driver()
+    results = {}
+    
+    try:
+        url = "https://www.trendforce.cn/price"
+        logger.info(f"正在访问: {url}")
+        driver.get(url)
+        time.sleep(5) # 简单粗暴等待 Cloudflare 验证通过
+        
+        # 调试：打印当前页面标题，看是否被拦截
+        logger.info(f"当前页面标题: {driver.title}")
+        
+        if "403" in driver.title or "Access denied" in driver.page_source:
+            logger.error("❌ 被 TrendForce 拦截 (403 Forbidden)")
+            return
+
+        # 获取 DRAM 和 Flash 数据 (根据当前页面 DOM 结构)
+        # 注意：这里简化处理，获取页面所有表格
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        
+        # 针对 TrendForce 的结构尝试寻找 DRAM 按钮并点击
+        # 实际 GitHub Actions 可能不需要点击，直接抓默认显示的，或者抓取所有 tab 内容
+        # 这里为了演示稳定性，我们尝试直接抓取当前显示的表格
+        
+        tables = soup.find_all('table')
+        categories = ['DRAM', 'NAND Flash'] # 假定顺序，或者根据内容判断
+        
+        for idx, table in enumerate(tables):
+            if idx >= len(categories): break
+            
+            cat_name = categories[idx]
+            headers = [th.text.strip() for th in table.find_all('th')]
+            rows = []
+            for tr in table.find_all('tr'):
+                cols = [td.text.strip() for td in tr.find_all('td')]
+                if cols: rows.append(cols)
+            
+            if rows:
+                if not headers: headers = [f"Col{i}" for i in range(len(rows[0]))]
+                results[cat_name] = {'headers': headers, 'rows': rows}
+                logger.info(f"抓取到 {cat_name}: {len(rows)} 行")
+
+    except Exception as e:
+        logger.error(f"抓取过程出错: {e}")
+    finally:
+        driver.quit()
+
+    # 推送
+    if results:
+        image_urls = {}
+        for name, data in results.items():
+            path = draw_table(name, data['headers'], data['rows'])
+            if path:
+                link = upload_image(path)
+                if link: image_urls[name] = link
+        
+        if image_urls:
+            send_dingtalk(image_urls)
+    else:
+        logger.warning("未获取到数据，不推送")
+
+def send_dingtalk(img_map):
     if not WEBHOOK or not SECRET: return
     timestamp = str(round(time.time() * 1000))
     secret_enc = SECRET.encode('utf-8')
     string_to_sign = '{}\n{}'.format(timestamp, SECRET)
-    string_to_sign_enc = string_to_sign.encode('utf-8')
-    hmac_code = hmac.new(secret_enc, string_to_sign_enc, digestmod=hashlib.sha256).digest()
+    hmac_code = hmac.new(secret_enc, string_to_sign.encode('utf-8'), digestmod=hashlib.sha256).digest()
     sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
-    url = f"{WEBHOOK}&timestamp={timestamp}&sign={sign}"
     
-    # 构建内容
-    content = f"### 📊 {title} 全局报告\n> 更新: {time.strftime('%H:%M')}\n\n"
-    
-    if not image_urls:
-        content += "⚠️ 未获取到任何数据图表。"
-    else:
-        for category, img_url in image_urls.items():
-            content += f"#### {category}\n![{category}]({img_url})\n\n"
-
-    headers = {'Content-Type': 'application/json'}
-    data = {"msgtype": "markdown", "markdown": {"title": title, "text": content}}
-    try:
-        requests.post(url, headers=headers, json=data, timeout=20)
-        print("✅ 推送成功")
-    except: pass
-
-def scrape_trendforce_all():
-    """全品类爬虫：DRAM / Flash / SSD"""
-    options = Options()
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--window-size=1920,1080")
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    driver = webdriver.Chrome(options=options)
-    
-    # 结果容器: {'DRAM': {'headers': [], 'rows': []}, 'NAND Flash': ...}
-    results = {}
-
-    try:
-        print("🌐 访问 TrendForce...")
-        driver.get("https://www.trendforce.cn/price")
-        time.sleep(5)
+    md_text = f"## 📊 存储价格日报\n> {time.strftime('%Y-%m-%d')}\n\n"
+    for k, v in img_map.items():
+        md_text += f"**{k}**\n![img]({v})\n"
         
-        # 定义我们要抓取的类别及其对应的按钮关键词
-        # 注意：TrendForce 页面上 SSD 可能没有独立的一级按钮，如果有就抓，没有就跳过
-        targets = [
-            ("DRAM", "//*[contains(text(), 'DRAM')]"),
-            ("NAND Flash", "//*[contains(text(), 'Flash') or contains(text(), 'NAND')]"), 
-            ("SSD", "//*[contains(text(), 'SSD')]")
-        ]
-
-        for category, xpath in targets:
-            print(f"\n🔍 尝试切换到 [{category}] 板块...")
-            try:
-                # 1. 点击切换标签
-                # 查找所有匹配的元素，点击第一个可见的
-                btns = driver.find_elements(By.XPATH, xpath)
-                clicked = False
-                for btn in btns:
-                    if btn.is_displayed():
-                        driver.execute_script("arguments[0].click();", btn)
-                        time.sleep(3) # 等待表格加载
-                        clicked = True
-                        break
-                
-                if not clicked:
-                    print(f"⚠️ 未找到 [{category}] 的切换按钮，跳过。")
-                    continue
-
-                # 2. 解析表格
-                soup = BeautifulSoup(driver.page_source, 'html.parser')
-                table = soup.select_one('table')
-                if not table:
-                    print(f"⚠️ [{category}] 页面未发现表格。")
-                    continue
-
-                # 3. 获取动态表头
-                headers = []
-                thead = table.select_one('thead')
-                if thead:
-                    headers = [th.get_text(strip=True) for th in thead.find_all('th')]
-                
-                # 如果没抓到表头，尝试用第一行数据反推（只要列数对）
-                if not headers:
-                    print(f"⚠️ [{category}] 无表头，尝试通用表头...")
-                    # 临时占位，后续根据数据列数补齐
-                
-                # 4. 获取数据行
-                rows = []
-                data_rows = table.select('tbody tr') or table.select('tr')
-                
-                for row in data_rows:
-                    cols = row.find_all(['td', 'th'])
-                    # 过滤掉空行或表头行
-                    if not cols or (cols[0].name == 'th' and not headers): 
-                        continue
-                    
-                    row_data = [c.get_text(strip=True) for c in cols]
-                    
-                    # 简单清洗：如果该行数据太少，可能是无效行
-                    if len(row_data) < 3: continue
-                    
-                    rows.append(row_data)
-
-                print(f"✅ [{category}] 抓取成功: {len(rows)} 行, {len(headers)} 列")
-                
-                # 如果之前没抓到表头，现在根据第一行数据生成由 Col1, Col2... 组成的假表头
-                if not headers and rows:
-                    headers = [f"Col {i+1}" for i in range(len(rows[0]))]
-
-                if rows:
-                    results[category] = {
-                        "headers": headers,
-                        "rows": rows
-                    }
-
-            except Exception as e:
-                print(f"❌ 抓取 [{category}] 时出错: {e}")
-
-        return results
-
-    except Exception as e:
-        print(f"Error: {e}")
-        return {}
-    finally:
-        driver.quit()
+    requests.post(
+        f"{WEBHOOK}&timestamp={timestamp}&sign={sign}",
+        json={"msgtype": "markdown", "markdown": {"title": "价格日报", "text": md_text}}
+    )
 
 if __name__ == "__main__":
-    print("🚀 启动全品类抓取任务 (DRAM/Flash/SSD)...")
-    
-    # 1. 抓取
-    all_data_map = scrape_trendforce_all()
-    
-    # 2. 绘图 & 上传
-    image_links = {}
-    
-    if all_data_map:
-        for category, data in all_data_map.items():
-            # 为每个类别画一张图
-            img_path = draw_generic_table(category, data['headers'], data['rows'])
-            if img_path:
-                url = upload_image_stable(img_path)
-                if url:
-                    image_links[category] = url
-    else:
-        print("❌ 未抓取到任何数据")
-
-    # 3. 发送汇总消息
-    if image_links:
-        send_dingtalk_multi_images("TrendForce 存储价格", image_links)
-    else:
-        print("❌ 无图片可发送")
+    main()
