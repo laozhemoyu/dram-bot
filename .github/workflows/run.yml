@@ -1,4 +1,4 @@
-name: Price Monitor Pro
+name: Price Monitor Edge Edition
 
 on:
   workflow_dispatch:
@@ -16,6 +16,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
+
+      - name: Install Microsoft Edge
+        run: |
+          curl https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > microsoft.gpg
+          sudo install -o root -g root -m 644 microsoft.gpg /etc/apt/trusted.gpg.d/
+          sudo sh -c 'echo "deb [arch=amd64] https://packages.microsoft.com/repos/edge stable main" > /etc/apt/sources.list.d/microsoft-edge.list'
+          sudo rm microsoft.gpg
+          sudo apt-get update
+          sudo apt-get install -y microsoft-edge-stable
 
       - name: Install Chinese Fonts
         run: |
