@@ -3,3 +3,6 @@ beautifulsoup4
 requests
 pandas
 seaborn
+webdriver-manager
+matplotlib
+openai
