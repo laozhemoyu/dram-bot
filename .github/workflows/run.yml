@@ -1,14 +1,13 @@
 name: Price Monitor Pro
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 支持手动点击运行
   schedule:
-    - cron: '40 8 * * *' # 北京时间 8:45 运行
+    - cron: '45 0 * * *' # 北京时间 08:45 运行
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,7 +17,6 @@ jobs:
         with:
           python-version: '3.9'
 
-      # 🔥 解决图片中文乱码
       - name: Install Fonts
         run: |
           sudo apt-get update
@@ -30,6 +28,7 @@ jobs:
 
       - name: Run
         env:
+          # 检查你的 GitHub Secrets 名字是否跟下面这四个一模一样
           DING_WEBHOOK: ${{ secrets.DING_WEBHOOK }}
           DING_SECRET: ${{ secrets.DING_SECRET }}
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
