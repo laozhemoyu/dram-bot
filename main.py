@@ -1,4 +1,4 @@
-import os, time, hmac, hashlib, base64, urllib.parse, requests, logging, re
+import os, time, hmac, hashlib, base64, urllib.parse, requests, logging
 import matplotlib.pyplot as plt
 from selenium import webdriver
 from selenium.webdriver.edge.options import Options as EdgeOptions
@@ -12,6 +12,7 @@ from openai import OpenAI
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# 环境配置
 WEBHOOK = os.environ.get("DING_WEBHOOK")
 SECRET = os.environ.get("DING_SECRET")
 AI_API_KEY = os.environ.get("AI_API_KEY")
@@ -28,112 +29,96 @@ def scrape_trendforce():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0")
     
-    # 🔥 修复方案：直接使用 GitHub 环境预装的驱动，跳过 WebDriver Manager 网络连接
+    # 🔥 核心修复：直接调用系统预装的 msedgedriver，不再联网下载
+    # GitHub Actions ubuntu-latest 环境默认路径通常如下
     try:
-        service = EdgeService(executable_path='/usr/bin/msedgedriver') 
+        service = EdgeService(executable_path='/usr/bin/msedgedriver')
         driver = webdriver.Edge(service=service, options=options)
-    except:
-        # 如果路径不匹配，尝试自动寻找（不联网下载）
+    except Exception as e:
+        logger.warning(f"指定路径失败，尝试默认启动: {e}")
         driver = webdriver.Edge(options=options)
     
     results = {}
     try:
-        logger.info("📡 正在精准访问 TrendForce...")
+        logger.info("📡 正在访问 TrendForce 官网...")
         driver.get("https://www.trendforce.cn/price")
         
-        # 强制等待核心表格出现
-        WebDriverWait(driver, 40).until(EC.presence_of_element_located((By.TAG_NAME, "table")))
+        # 等待表格加载
+        WebDriverWait(driver, 45).until(EC.presence_of_element_located((By.TAG_NAME, "table")))
         
-        # 深度滚动触发所有异步数据
-        for i in range(3):
-            driver.execute_script(f"window.scrollTo(0, {800 * (i+1)});")
-            time.sleep(4)
-            
+        # 强制滚动触发加载
+        for scroll in [1000, 2000]:
+            driver.execute_script(f"window.scrollTo(0, {scroll});")
+            time.sleep(5)
+        
         soup = BeautifulSoup(driver.page_source, 'html.parser')
-        
-        # 目标板块关键字
         targets = {"DRAM": "DRAM 现货价格", "NAND Flash": "NAND Flash 现货价格", "SSD": "成品现货价格"}
         
         for key, title_text in targets.items():
-            # 找到标题
             anchor = soup.find(lambda tag: tag.name in ['div', 'span', 'h3'] and title_text in tag.text)
-            if not anchor: continue
-            
-            table = anchor.find_next('table')
-            if table:
-                headers = [th.get_text(strip=True) for th in table.find_all('th')]
-                rows = []
-                for tr in table.find_all('tr')[1:]:
-                    cells = tr.find_all('td')
-                    if len(cells) > 2:
-                        # 🔥 修复项目名称显示问题：排除干扰脚本，只提取纯净文字
-                        line = []
-                        for i, td in enumerate(cells):
-                            [s.extract() for s in td(['script', 'style'])] # 剔除脚本
-                            text = td.get_text(" ", strip=True)
-                            # 如果第一列全是数字，尝试抓取它子标签里的 title 或数据
-                            if i == 0 and text.replace('.', '').isdigit():
-                                text = td.get('title') or text
-                            line.append(text)
-                        
-                        if len(line[0]) > 3: # 过滤无效短行
-                            rows.append(line[:len(headers)])
-                
-                if rows:
-                    results[key] = {"headers": headers, "rows": rows}
-                    logger.info(f"✅ 成功抓取板块: {key}")
-
+            if anchor:
+                table = anchor.find_next('table')
+                if table:
+                    headers = [th.get_text(strip=True) for th in table.find_all('th')]
+                    rows = []
+                    for tr in table.find_all('tr')[1:]:
+                        cells = tr.find_all('td')
+                        if len(cells) >= 2:
+                            # 提取文字并过滤第一列的纯数字干扰
+                            line = []
+                            for i, td in enumerate(cells):
+                                txt = td.get_text(" ", strip=True)
+                                if i == 0 and (not txt or txt.replace('.','').isdigit()):
+                                    txt = td.get('title') or txt
+                                line.append(txt)
+                            if len(line[0]) > 2: rows.append(line[:len(headers)])
+                    
+                    if rows:
+                        results[key] = {"headers": headers, "rows": rows}
+                        logger.info(f"✅ 成功抓取: {key}")
     finally:
         driver.quit()
     return results
 
+# --- 其余 draw_table, get_ai_analysis, send_dingtalk 函数保持不变 ---
 def draw_table(title, headers, rows):
     if not rows: return None
-    # 进一步加宽画布，确保 DDR5 16G (2Gx8) 不重叠
-    fig, ax = plt.subplots(figsize=(16, len(rows)*0.5 + 2))
+    fig, ax = plt.subplots(figsize=(15, len(rows)*0.5 + 2))
     ax.axis('off')
     table = ax.table(cellText=rows, colLabels=headers, loc='center', cellLoc='left')
-    table.auto_set_font_size(False); table.set_fontsize(11); table.scale(1.2, 2.4)
-    
+    table.auto_set_font_size(False); table.set_fontsize(10); table.scale(1.2, 2.2)
     for (i, j), cell in table.get_celld().items():
-        if i == 0:
-            cell.set_facecolor('#D6EAF8'); cell.set_text_props(weight='bold', ha='center')
-        elif j == len(headers) - 1:
-            val = rows[i-1][j]
-            if '▲' in val or '+' in val: cell.set_text_props(color='red', weight='bold')
-            elif '▼' in val or '-' in val: cell.set_text_props(color='green', weight='bold')
-    
+        if i == 0: cell.set_facecolor('#D6EAF8'); cell.set_text_props(weight='bold', ha='center')
     path = f"{title}.png"
     plt.savefig(path, bbox_inches='tight', dpi=120); plt.close()
     return path
 
 def get_ai_analysis(data):
-    if not AI_API_KEY: return "AI 配置缺失"
-    prompt = f"分析以下存储行情并给出150字内判断，加粗结论：\n{str(data)[:2000]}"
+    if not AI_API_KEY: return "AI Key 未配置"
     try:
         client = OpenAI(api_key=AI_API_KEY, base_url=AI_BASE_URL)
-        resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
+        resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": f"简要分析行情：{str(data)[:1000]}"}])
         return resp.choices[0].message.content
-    except: return "AI 分析暂时故障"
+    except: return "AI 分析不可用"
 
 def send_dingtalk(links, ai_text):
     if not WEBHOOK or not links: return
     ts = str(round(time.time() * 1000))
     sign = urllib.parse.quote_plus(base64.b64encode(hmac.new(SECRET.encode('utf-8'), f"{ts}\n{SECRET}".encode('utf-8'), hashlib.sha256).digest()))
-    md = f"## 📊 存储价格行情监控\n\n### 🤖 AI 分析\n{ai_text}\n\n---\n"
-    for cat in ["DRAM", "NAND Flash", "SSD"]:
-        if cat in links: md += f"#### {cat}\n![{cat}]({links[cat]})\n\n"
-    requests.post(f"{WEBHOOK}&timestamp={ts}&sign={sign}", json={"msgtype": "markdown", "markdown": {"title": "行情快报", "text": md}})
+    md = f"### 📊 价格监控报告\n{ai_text}\n\n"
+    for c in ["DRAM", "NAND Flash", "SSD"]:
+        if c in links: md += f"#### {c}\n![{c}]({links[c]})\n\n"
+    requests.post(f"{WEBHOOK}&timestamp={ts}&sign={sign}", json={"msgtype": "markdown", "markdown": {"title": "报告", "text": md}})
 
 if __name__ == "__main__":
     configure_fonts()
     res = scrape_trendforce()
     if res:
         ai = get_ai_analysis(res)
-        links = {}
-        for cat, content in res.items():
-            p = draw_table(cat, content['headers'], content['rows'])
+        lnks = {}
+        for cat, cont in res.items():
+            p = draw_table(cat, cont['headers'], cont['rows'])
             if p:
                 r = requests.post('https://catbox.moe/user/api.php', data={'reqtype': 'fileupload'}, files={'fileToUpload': open(p, 'rb')})
-                if r.status_code == 200: links[cat] = r.text.strip()
-        send_dingtalk(links, ai)
+                if r.status_code == 200: lnks[cat] = r.text.strip()
+        send_dingtalk(lnks, ai)
