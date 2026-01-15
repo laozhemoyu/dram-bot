@@ -29,13 +29,13 @@ def scrape_trendforce():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0")
     
-    # 🔥 核心修复：直接使用 GitHub 系统预装的驱动，不再联网下载任何插件
+    # 🔥 核心修复：直接调用系统预装的 msedgedriver，删掉 DriverManager().install()
+    # GitHub Actions ubuntu 环境通过 apt 安装后，路径就在 /usr/bin/msedgedriver
     try:
-        # 指定 ubuntu 环境下 msedgedriver 的默认位置
         service = EdgeService(executable_path='/usr/bin/msedgedriver')
         driver = webdriver.Edge(service=service, options=options)
     except Exception as e:
-        logger.warning(f"指定路径启动失败，尝试自动寻找本地驱动: {e}")
+        logger.warning(f"指定路径启动失败，尝试默认模式: {e}")
         driver = webdriver.Edge(options=options)
     
     results = {}
@@ -46,7 +46,7 @@ def scrape_trendforce():
         # 等待表格加载
         WebDriverWait(driver, 45).until(EC.presence_of_element_located((By.TAG_NAME, "table")))
         
-        # 强制向下滚动，确保底部的 SSD 板块被触发加载
+        # 强制向下滚动，确保底部的 SSD 模块被触发加载
         for scroll in [1000, 2000]:
             driver.execute_script(f"window.scrollTo(0, {scroll});")
             time.sleep(5)
@@ -64,34 +64,31 @@ def scrape_trendforce():
                     for tr in table.find_all('tr')[1:]:
                         cells = tr.find_all('td')
                         if len(cells) >= 2:
-                            # 🔥 修复项目名称显示问题：优先取完整文本或 title 属性
+                            # 修复之前出现的“型号显示为数字”的问题
                             line = []
                             for i, td in enumerate(cells):
-                                txt = td.get_text(" ", strip=True)
-                                # 如果第一列名字被数字覆盖，尝试抓取 title 标签内容
-                                if i == 0 and (not txt or txt.replace('.','').isdigit()):
-                                    txt = td.get('title') or txt
+                                # 优先抓取 title 属性，这通常包含完整的型号名称
+                                txt = td.get('title') or td.get_text(" ", strip=True)
                                 line.append(txt)
-                            if len(line[0]) > 2:
+                            if len(line[0]) > 3: # 过滤无效行
                                 rows.append(line[:len(headers)])
                     
                     if rows:
                         results[key] = {"headers": headers, "rows": rows}
-                        logger.info(f"✅ 成功抓取板块数据: {key}")
+                        logger.info(f"✅ 成功抓取: {key}")
     finally:
         driver.quit()
     return results
 
-# 绘图、AI、发送逻辑保持不变
 def draw_table(title, headers, rows):
     if not rows: return None
+    # 加宽画布防止文字重叠
     fig, ax = plt.subplots(figsize=(16, len(rows)*0.55 + 2))
     ax.axis('off')
     table = ax.table(cellText=rows, colLabels=headers, loc='center', cellLoc='left')
     table.auto_set_font_size(False); table.set_fontsize(11); table.scale(1.2, 2.4)
     for (i, j), cell in table.get_celld().items():
-        if i == 0:
-            cell.set_facecolor('#D6EAF8'); cell.set_text_props(weight='bold', ha='center')
+        if i == 0: cell.set_facecolor('#D6EAF8'); cell.set_text_props(weight='bold', ha='center')
     path = f"{title}.png"
     plt.savefig(path, bbox_inches='tight', dpi=120); plt.close()
     return path
@@ -100,18 +97,18 @@ def get_ai_analysis(data):
     if not AI_API_KEY: return "AI Key 未配置"
     try:
         client = OpenAI(api_key=AI_API_KEY, base_url=AI_BASE_URL)
-        resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": f"分析行情：{str(data)[:1000]}"}])
+        resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": f"总结行情：{str(data)[:1000]}"}])
         return resp.choices[0].message.content
-    except: return "AI 分析暂时无法使用"
+    except: return "AI 分析暂时不可用"
 
 def send_dingtalk(links, ai_text):
     if not WEBHOOK or not links: return
     ts = str(round(time.time() * 1000))
     sign = urllib.parse.quote_plus(base64.b64encode(hmac.new(SECRET.encode('utf-8'), f"{ts}\n{SECRET}".encode('utf-8'), hashlib.sha256).digest()))
-    md = f"### 📊 实时存储价格报告\n{ai_text}\n\n"
+    md = f"### 📊 实时存储行情报告\n{ai_text}\n\n---\n"
     for cat in ["DRAM", "NAND Flash", "SSD"]:
         if cat in links: md += f"#### {cat}\n![{cat}]({links[cat]})\n\n"
-    requests.post(f"{WEBHOOK}&timestamp={ts}&sign={sign}", json={"msgtype": "markdown", "markdown": {"title": "价格报告", "text": md}})
+    requests.post(f"{WEBHOOK}&timestamp={ts}&sign={sign}", json={"msgtype": "markdown", "markdown": {"title": "价格监控", "text": md}})
 
 if __name__ == "__main__":
     configure_fonts()
@@ -124,5 +121,4 @@ if __name__ == "__main__":
             if p:
                 r = requests.post('https://catbox.moe/user/api.php', data={'reqtype': 'fileupload'}, files={'fileToUpload': open(p, 'rb')})
                 if r.status_code == 200: img_links[cat] = r.text.strip()
-                os.remove(p)
         send_dingtalk(img_links, ai)
