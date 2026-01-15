@@ -64,10 +64,11 @@ def scrape_trendforce():
                     for tr in table.find_all('tr')[1:]:
                         cells = tr.find_all('td')
                         if len(cells) >= 2:
-                            # 提取文字并修复项目名称显示（若 td 没文字则取 title 属性）
+                            # 🔥 修复项目名称显示问题：优先取完整文本或 title 属性
                             line = []
                             for i, td in enumerate(cells):
                                 txt = td.get_text(" ", strip=True)
+                                # 如果第一列名字被数字覆盖，尝试抓取 title 标签内容
                                 if i == 0 and (not txt or txt.replace('.','').isdigit()):
                                     txt = td.get('title') or txt
                                 line.append(txt)
@@ -84,14 +85,13 @@ def scrape_trendforce():
 # 绘图、AI、发送逻辑保持不变
 def draw_table(title, headers, rows):
     if not rows: return None
-    fig, ax = plt.subplots(figsize=(15, len(rows)*0.5 + 2))
+    fig, ax = plt.subplots(figsize=(16, len(rows)*0.55 + 2))
     ax.axis('off')
     table = ax.table(cellText=rows, colLabels=headers, loc='center', cellLoc='left')
-    table.auto_set_font_size(False); table.set_fontsize(10); table.scale(1.2, 2.2)
+    table.auto_set_font_size(False); table.set_fontsize(11); table.scale(1.2, 2.4)
     for (i, j), cell in table.get_celld().items():
         if i == 0:
-            cell.set_facecolor('#D6EAF8')
-            cell.set_text_props(weight='bold', ha='center')
+            cell.set_facecolor('#D6EAF8'); cell.set_text_props(weight='bold', ha='center')
     path = f"{title}.png"
     plt.savefig(path, bbox_inches='tight', dpi=120); plt.close()
     return path
@@ -100,7 +100,7 @@ def get_ai_analysis(data):
     if not AI_API_KEY: return "AI Key 未配置"
     try:
         client = OpenAI(api_key=AI_API_KEY, base_url=AI_BASE_URL)
-        resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": f"简要分析以下行情：{str(data)[:1000]}"}])
+        resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": f"分析行情：{str(data)[:1000]}"}])
         return resp.choices[0].message.content
     except: return "AI 分析暂时无法使用"
 
