@@ -1,4 +1,4 @@
-name: Price Monitor Pro
+name: Price Monitor Edge Edition
 
 on:
   workflow_dispatch:
@@ -17,9 +17,7 @@ jobs:
       - name: Install Edge and Driver
         run: |
           sudo apt-get update
-          sudo apt-get install -y microsoft-edge-stable
-          # 安装对应版本的驱动
-          sudo apt-get install -y msedgedriver
+          sudo apt-get install -y microsoft-edge-stable msedgedriver
 
       - name: Install Fonts
         run: sudo apt-get install -y fonts-wqy-microhei
