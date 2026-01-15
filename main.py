@@ -10,11 +10,10 @@ from webdriver_manager.microsoft import EdgeChromiumDriverManager
 from bs4 import BeautifulSoup
 from openai import OpenAI
 
-# 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# 获取环境变量
+# 环境配置
 WEBHOOK = os.environ.get("DING_WEBHOOK")
 SECRET = os.environ.get("DING_SECRET")
 AI_API_KEY = os.environ.get("AI_API_KEY")
@@ -25,7 +24,7 @@ def configure_fonts():
     plt.rcParams['axes.unicode_minus'] = False
 
 def get_ai_analysis(data_results):
-    if not AI_API_KEY: return "⚠️ 未配置 AI API Key。"
+    if not AI_API_KEY: return "⚠️ 未配置 AI Key。"
     summary = ""
     for cat, content in data_results.items():
         summary += f"\n【{cat}】\n" + "\n".join([" | ".join(row) for row in content['rows'][:10]])
@@ -33,20 +32,18 @@ def get_ai_analysis(data_results):
         client = OpenAI(api_key=AI_API_KEY, base_url=AI_BASE_URL)
         response = client.chat.completions.create(
             model="deepseek-chat",
-            messages=[{"role": "system", "content": "你是一名存储行业资深分析师。"},
-                      {"role": "user", "content": f"分析以下存储价格趋势，150字内，结论需**加粗**：\n{summary}"}]
+            messages=[{"role": "system", "content": "你是一名存储分析师。"},
+                      {"role": "user", "content": f"总结以下价格趋势（150字内，**加粗**结论）：\n{summary}"}]
         )
         return response.choices[0].message.content
-    except: return "❌ AI 趋势分析调用失败。"
+    except: return "❌ AI 分析失败。"
 
 def scrape_trendforce():
-    """使用 Microsoft Edge 进行数据抓取"""
     options = EdgeOptions()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-blink-features=AutomationControlled")
-    # 模拟真实 Edge 用户代理
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0")
     
     service = EdgeService(EdgeChromiumDriverManager().install())
@@ -54,51 +51,77 @@ def scrape_trendforce():
     
     results = {}
     try:
-        logger.info("📡 正在启动 Edge 访问 TrendForce...")
+        logger.info("📡 正在启动 Edge 访问页面...")
         driver.get("https://www.trendforce.cn/price")
         
-        # 针对海外 IP 访问国内站增加超长等待
-        wait = WebDriverWait(driver, 45)
-        wait.until(EC.presence_of_element_located((By.TAG_NAME, "table")))
+        # 初始等待
+        WebDriverWait(driver, 45).until(EC.presence_of_element_located((By.TAG_NAME, "table")))
         
-        # 额外缓冲时间确保 SSD 动态数据渲染完毕
-        time.sleep(12) 
+        # 🔥 修复 SSD 缺失：分三段滚动并触发懒加载
+        for p in [0.3, 0.6, 1.0]:
+            driver.execute_script(f"window.scrollTo(0, document.body.scrollHeight * {p});")
+            time.sleep(4)
         
         soup = BeautifulSoup(driver.page_source, 'html.parser')
-        tables = soup.find_all('table')
-        logger.info(f"✅ Edge 加载成功，找到 {len(tables)} 个数据表")
+        # 寻找所有包含“现货价格”的模块
+        sections = soup.find_all('div', class_='price-table-block') or soup.find_all('div', class_='table-responsive')
         
-        cats = ["DRAM", "NAND Flash", "SSD"]
-        for i, table in enumerate(tables[:3]):
-            headers = [th.text.strip() for th in table.find_all('th')]
-            rows = [[td.text.strip() for td in tr.find_all('td')] for tr in table.find_all('tr') if tr.find_all('td')]
+        # 预设顺序
+        cats_list = ["DRAM", "NAND Flash", "SSD"]
+        tables = soup.find_all('table')
+        logger.info(f"检测到 {len(tables)} 个表格")
+
+        for i, table in enumerate(tables):
+            if i >= len(cats_list): break
+            
+            # 🔥 修复项目名字错误：精准提取第一列文字
+            headers = [th.get_text(strip=True) for th in table.find_all('th')]
+            rows = []
+            for tr in table.find_all('tr'):
+                cells = tr.find_all('td')
+                if not cells: continue
+                # 尝试获取第一列的完整文字（包含隐藏属性或子标签）
+                row_data = [td.get_text(strip=True) for td in cells]
+                if row_data: rows.append(row_data)
+            
             if rows:
-                results[cats[i]] = {"headers": headers, "rows": rows}
-                logger.info(f"提取成功: {cats[i]}")
+                results[cats_list[i]] = {"headers": headers, "rows": rows}
+                logger.info(f"✅ 成功提取: {cats_list[i]} (共 {len(rows)} 行)")
+
     except Exception as e:
-        logger.error(f"❌ Edge 抓取过程出错: {e}")
+        logger.error(f"❌ 抓取异常: {e}")
     finally:
         driver.quit()
     return results
 
 def draw_table(title, headers, rows):
     if not rows: return None
-    fig, ax = plt.subplots(figsize=(12, len(rows)*0.45 + 1.5))
+    # 增加宽度以适应长项目名称
+    fig, ax = plt.subplots(figsize=(14, len(rows)*0.5 + 2))
     ax.axis('off')
-    table = ax.table(cellText=rows, colLabels=headers, loc='center', cellLoc='center')
-    table.auto_set_font_size(False); table.set_fontsize(9); table.scale(1, 1.8)
     
+    # 修复文字显示：自动调整列宽
+    table = ax.table(cellText=rows, colLabels=headers, loc='center', cellLoc='left')
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1.2, 2.0) # 纵向拉伸方便阅读
+
     for (i, j), cell in table.get_celld().items():
         if i == 0:
             cell.set_facecolor('#D6EAF8')
-            cell.set_text_props(weight='bold')
-        elif j == len(headers) - 1: # 涨跌变色
+            cell.set_text_props(weight='bold', ha='center')
+        elif j == len(headers) - 1: # 最后一列变色
             val = rows[i-1][j]
-            if '▲' in val or '+' in val: cell.set_text_props(color='#C0392B', weight='bold')
-            elif '▼' in val or '-' in val: cell.set_text_props(color='#27AE60', weight='bold')
-    
+            if '▲' in val or '+' in val: cell.set_text_props(color='red', weight='bold')
+            elif '▼' in val or '-' in val: cell.set_text_props(color='green', weight='bold')
+            cell.set_text_props(ha='center')
+        else:
+            cell.set_text_props(ha='left')
+
+    plt.title(f"{title} Monitor ({time.strftime('%Y-%m-%d')})", fontsize=16, pad=20, weight='bold')
     path = f"{title}.png"
-    plt.savefig(path, bbox_inches='tight', dpi=130); plt.close()
+    plt.savefig(path, bbox_inches='tight', dpi=120)
+    plt.close()
     return path
 
 def send_dingtalk(links, ai_text):
@@ -106,12 +129,14 @@ def send_dingtalk(links, ai_text):
     ts = str(round(time.time() * 1000))
     sign = urllib.parse.quote_plus(base64.b64encode(hmac.new(SECRET.encode('utf-8'), f"{ts}\n{SECRET}".encode('utf-8'), hashlib.sha256).digest()))
     
-    md = f"## 📊 存储价格行情 (Edge 引擎)\n\n### 🤖 AI 深度解读\n{ai_text}\n\n---\n"
-    for cat, url in links.items():
-        md += f"#### {cat}\n![{cat}]({url})\n\n"
+    md = f"## 📊 存储价格快报\n\n### 🤖 AI 深度解读\n{ai_text}\n\n---\n"
+    # 显式排序确保 SSD 在末尾
+    for key in ["DRAM", "NAND Flash", "SSD"]:
+        if key in links:
+            md += f"#### {key}\n![{key}]({links[key]})\n\n"
 
     requests.post(f"{WEBHOOK}&timestamp={ts}&sign={sign}", 
-                  json={"msgtype": "markdown", "markdown": {"title": "行情报告", "text": md}})
+                  json={"msgtype": "markdown", "markdown": {"title": "价格报告", "text": md}})
 
 if __name__ == "__main__":
     configure_fonts()
@@ -122,12 +147,10 @@ if __name__ == "__main__":
         for cat, content in data.items():
             path = draw_table(cat, content['headers'], content['rows'])
             if path:
-                # 通过 Catbox 上传生成公网图床链接
+                # 使用 Catbox 上传
                 with open(path, 'rb') as f:
                     r = requests.post('https://catbox.moe/user/api.php', 
                                      data={'reqtype': 'fileupload'}, files={'fileToUpload': f})
                     if r.status_code == 200: links[cat] = r.text.strip()
                 os.remove(path)
         send_dingtalk(links, ai_msg)
-    else:
-        logger.error("未能抓取到任何数据。")
